@@ -45,76 +45,47 @@ data {
   vector[N] dev;                     // Development period
   vector[N] delta;                   // 0 for outstanding, 1 for paid
   vector[n_accident_years] RateIndex; // Rate indices by accident year
-  vector[N] loss_ratio;              // Response variable
 }
 
-parameters {
-  // Population-level parameters
-  real oker;                         // Log-scale parameter for ker
-  real okp;                          // Log-scale parameter for kp
+generated quantities {
+  // Sample parameters from priors
+  real oker = normal_rng(0, 1);
+  real okp = normal_rng(0, 1);
 
-  // Hierarchical parameters
-  real oRLR_mu;                      // Population mean for RLR
-  real oRRF_mu;                      // Population mean for RRF
-  real<lower=0> oRLR_sd;            // Population SD for RLR
-  real<lower=0> oRRF_sd;            // Population SD for RRF
+  // Population-level parameters for hierarchical structure
+  real oRLR_mu = normal_rng(0, 1);
+  real oRRF_mu = normal_rng(0, 1);
+  real<lower=0> oRLR_sd = abs(student_t_rng(10, 0, 0.05));
+  real<lower=0> oRRF_sd = abs(student_t_rng(10, 0, 0.05));
 
-  // Random effects (non-centered parameterization)
-  vector[n_accident_years] oRLR_raw; // Non-centered parameterization
-  vector[n_accident_years] oRRF_raw; // Non-centered parameterization
+  // Generate correlation matrix
+  cholesky_factor_corr[2] L_Omega = lkj_corr_cholesky_rng(2, 1);
 
-  // Correlation
-  cholesky_factor_corr[2] L_Omega;   // Cholesky factor of correlation matrix
+  // Generate random effects
+  vector[n_accident_years] oRLR_raw;
+  vector[n_accident_years] oRRF_raw;
+  for (i in 1:n_accident_years) {
+    oRLR_raw[i] = normal_rng(0, 1);
+    oRRF_raw[i] = normal_rng(0, 1);
+  }
 
-  // Observation-level parameters
-  real<lower=0> sigma_outstanding;   // SD for outstanding claims
-  real<lower=0> sigma_paid;          // SD for paid claims
-}
-
-transformed parameters {
-  vector[n_accident_years] oRLR;
-  vector[n_accident_years] oRRF;
+  // Transform to correlated random effects
   matrix[2, n_accident_years] random_effects;
-
-  // Non-centered parameterization for random effects
   random_effects[1] = oRLR_raw';
   random_effects[2] = oRRF_raw';
   random_effects = diag_pre_multiply([oRLR_sd, oRRF_sd]', L_Omega) * random_effects;
 
-  oRLR = oRLR_mu + random_effects[1]';
-  oRRF = oRRF_mu + random_effects[2]';
-}
+  vector[n_accident_years] oRLR = oRLR_mu + random_effects[1]';
+  vector[n_accident_years] oRRF = oRRF_mu + random_effects[2]';
 
-model {
-  // Priors
-  oker ~ normal(0, 1);
-  okp ~ normal(0, 1);
-  oRLR_mu ~ normal(0, 1);
-  oRRF_mu ~ normal(0, 1);
-  oRLR_sd ~ student_t(10, 0, 0.05);
-  oRRF_sd ~ student_t(10, 0, 0.05);
-  oRLR_raw ~ std_normal();
-  oRRF_raw ~ std_normal();
-  L_Omega ~ lkj_corr_cholesky(1);
-  sigma_outstanding ~ lognormal(log(0.05), 0.02);
-  sigma_paid ~ lognormal(log(0.1), 0.05);
+  // Sample observation-level parameters
+  // In brms with link_sigma = "log", the priors are on log(sigma)
+  real log_sigma_outstanding = normal_rng(log(0.05), 0.02);
+  real log_sigma_paid = normal_rng(log(0.1), 0.05);
+  real<lower=0> sigma_outstanding = exp(log_sigma_outstanding);
+  real<lower=0> sigma_paid = exp(log_sigma_paid);
 
-  // Likelihood
-  for (n in 1:N) {
-    real ker = 0.1 * exp(oker * 0.05);
-    real kp = 0.5 * exp(okp * 0.025);
-    real RLR = 0.55 * exp(oRLR[accident_year_id[n]] * 0.025) / RateIndex[accident_year_id[n]];
-    real RRF = exp(oRRF[accident_year_id[n]] * 0.05);
-
-    real eta = incrclaimsprocess(dev[n], 1.0, ker, kp, RLR, RRF, delta[n]);
-    real sigma = delta[n] == 0 ? sigma_outstanding : sigma_paid;
-
-    loss_ratio[n] ~ lognormal(log(eta), sigma);
-  }
-}
-
-generated quantities {
-  // For posterior predictive checks
+  // Generate prior predictive samples
   vector[N] loss_ratio_rep;
 
   for (n in 1:N) {
